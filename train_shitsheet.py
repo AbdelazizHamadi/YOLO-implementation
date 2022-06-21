@@ -2,7 +2,7 @@ import torch
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from YOLO_model import YOLOv1
-from dataset import VOCDataset
+from dataset_temp import VOCDataset
 
 seed = 123
 torch.manual_seed(seed)

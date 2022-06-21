@@ -4,7 +4,13 @@ import torch.optim as optim
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from YOLO_model import YOLOv1
-from dataset import VOCDataset
+from dataset_temp import VOCDataset
+
+import os
+import numpy as np
+from torch.utils.data.sampler import SubsetRandomSampler
+
+from dataset import PancakeDataset
 
 from utils import (
     mean_average_precision,
@@ -54,15 +60,15 @@ architecture_config = [
 LEARNING_RATE = 1e-5
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 WEIGHT_DECAY = 0
-BATCH_SIZE = 4
-EPOCHS = 500
+BATCH_SIZE = 1
+EPOCHS = 10
 NUM_WORKERS = 0
 PIN_MEMORY = True
 LOAD_MODEL = False
 LOAD_MODEL_FILE = "overfit.path.tar"
 
-IMG_DIR = "./dataset/images"
-LABEL_DIR = "./dataset/labels"
+IMG_DIR = "./pancake/images"
+LABEL_DIR = "./pancake/annotations/pancake.json"
 
 
 class Compose(object):
@@ -101,7 +107,7 @@ def train_fn(train_loader, model, optimizer, loss_fn):
 
 
 def main():
-    model = YOLOv1(architecture_config, split_size=7, num_boxes=2, num_classes=20).to(DEVICE)
+    model = YOLOv1(architecture_config, split_size=7, num_boxes=2, num_classes=1).to(DEVICE)
     optimizer = optim.Adam(
         model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
     )
@@ -111,29 +117,43 @@ def main():
     if LOAD_MODEL:
         load_checkpoint(torch.load(LOAD_MODEL_FILE), model, optimizer)
 
-    train_dataset = VOCDataset("./dataset/8examples.csv",
-                               transform=transform,
-                               img_dir=IMG_DIR, label_dir=LABEL_DIR)
 
-    test_dataset = VOCDataset("./dataset/8examples.csv",
-                              transform=transform,
-                              img_dir=IMG_DIR, label_dir=LABEL_DIR)
+    # get dataset size
+    # some_configs
+    validation_split = .2
+    random_seed = 42
+
+    dataset_size = len(os.listdir(IMG_DIR))
+    indices = list(range(dataset_size))
+    split = int(np.floor(validation_split * dataset_size))
+    np.random.seed(random_seed)
+    np.random.shuffle(indices)
+    train_indices, val_indices = indices[split:], indices[:split]
+
+    # Creating PT data samplers and loaders:
+    train_sampler = SubsetRandomSampler(train_indices)
+    valid_sampler = SubsetRandomSampler(val_indices)
+
+    train_dataset = PancakeDataset(IMG_DIR, LABEL_DIR,
+                               transform=transform)
+
+    val_dataset = PancakeDataset(IMG_DIR, LABEL_DIR,
+                                   transform=transform)
+
     train_loader = DataLoader(
         dataset=train_dataset,
         batch_size=BATCH_SIZE,
         num_workers=NUM_WORKERS,
         pin_memory=PIN_MEMORY,
-        shuffle=True,
-        drop_last=False
+        sampler=train_sampler,
     )
 
-    test_loader = DataLoader(
-        dataset=test_dataset,
+    val_loader = DataLoader(
+        dataset=val_dataset,
         batch_size=BATCH_SIZE,
         num_workers=NUM_WORKERS,
         pin_memory=PIN_MEMORY,
-        shuffle=True,
-        drop_last=True
+        sampler=valid_sampler,
     )
 
     for epoch in range(EPOCHS):
@@ -141,6 +161,7 @@ def main():
             train_loader, model, iou_threshold=0.5, threshold=0.4
         )
 
+        #print("pred_boxes shape : ", pred_boxes.shape)
         mean_avg_prec = mean_average_precision(
             pred_boxes, target_boxes, iou_threshold=0.5, box_format="midpoint"
         )

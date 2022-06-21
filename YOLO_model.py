@@ -121,16 +121,16 @@ class YOLOv1(nn.Module):
 
         return nn.Sequential(
             nn.Flatten(),
-            nn.Linear(1024 * S * S, 496),
+            nn.Linear(1024 * S * S, 539),
             nn.Dropout(0.5),
             nn.LeakyReLU(0.1),
-            nn.Linear(496, S * S * (C + B * 5))  # (S, S, 30) where C + B*5 = 30
+            nn.Linear(539, S * S * (C + B * 5))  # (S, S, 30) where C + B*5 = 30
         )
 
 
-def test(S=7, B=2, C=20):
-    model = YOLOv1(architecture=architecture_config, in_channels=1, split_size = S, num_boxes=B, num_classes = C)
-    x = torch.randn((2, 1, 448, 448))
+def test(S=7, B=2, C=1):
+    model = YOLOv1(architecture=architecture_config, in_channels=3, split_size = S, num_boxes=B, num_classes = C)
+    x = torch.randn((2, 3, 448, 448))
 
     return model(x)
     #print(model(x).reshape(30, 7, 7))

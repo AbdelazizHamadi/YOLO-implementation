@@ -6,46 +6,107 @@ import torch
 import os
 import pandas as pd
 from PIL import Image
+import json
 
 
-class VOCDataset(torch.utils.data.Dataset):
-    def __init__(
-            self, csv_file, img_dir, label_dir, S=7, B=2, C=20, transform=None,
-    ):
-        self.annotations = pd.read_csv(csv_file)
+class PancakeDataset(torch.utils.data.Dataset):
+    def __init__(self, img_dir, annotation_path, S=7, B=2, C=1, transform=None, ):
+        self.annotation_path = annotation_path
+
+        # Opening JSON file
+        f = open(self.annotation_path)
+        # returns JSON object as a dictionary
+        self.dataset = json.load(f)
         self.img_dir = img_dir
-        self.label_dir = label_dir
         self.transform = transform
         self.S = S
         self.B = B
         self.C = C
 
-    def __len__(self):
-        return len(self.annotations)
+        self.imgFiles = self.get_images_paths()
+        self.boxes = self.get_boxes()
+
+    def get_images_paths(self):
+        self.imgFiles = []
+
+        for i in range(len(self.dataset['images'])):
+            self.imgFiles.append(os.path.join(self.img_dir, self.dataset['images'][i]['file_name']))
+
+        return self.imgFiles
+
+    def convertbox2yolo(self, dims, box):
+        dw = 1. / dims[0]
+        dh = 1. / dims[1]
+        # box x, y , w, h
+        x = ((box[0] + box[2]) + box[0]) / 2.0
+        y = ((box[1] + box[3]) + box[1]) / 2.0
+        w = box[2]
+        h = box[3]
+        x = x * dw
+        w = w * dw
+        y = y * dh
+        h = h * dh
+
+        return x, y, w, h
+
+    def yolobbox2bbox(self, box, w=1920, h=1280):
+        x, y = box[1], box[2]
+        x1, y1 = x - w / 2, y - h / 2
+        x2, y2 = x + w / 2, y + h / 2
+        return torch.tensor([x1, y1, x2, y2])
+
+
+    def get_boxes(self):
+
+        self.boxes = []
+
+        for i in range(len(self.dataset['images'])):
+            image_id = self.dataset['images'][i]['id']
+            file_name = self.dataset['images'][i]['file_name']
+            bbox = []
+            for j in range(len(self.dataset['annotations'])):
+                if self.dataset['annotations'][j]['image_id'] == image_id:
+                    bbox.append([file_name, int(self.dataset['annotations'][j]['category_id']),
+                                 self.dataset['annotations'][j]['bbox'],
+                                 self.dataset['annotations'][j]['width'], self.dataset['annotations'][j]['height']])
+
+            self.boxes.append(bbox)
+
+        return self.boxes
+
+    def get_image_boxes(self, image_boxes_list, box_format="yolo"):
+
+        yolo_boxes = []
+        normal_boxes = []
+
+        for info in image_boxes_list:
+
+            # info : [file_name, class, box[...], width, height]
+            if box_format == "yolo":
+                x, y, w, h = self.convertbox2yolo(dims=(info[3], info[4]), box=info[2])
+                yolo_boxes.append([info[1], x, y, w, h])
+
+            else:
+                xmin, ymin, w, h = info[2][0], info[2][1], info[2][2], info[2][3]
+                normal_boxes.append([info[1], xmin, ymin, w, h])
+
+                pass
+
+        return torch.tensor(yolo_boxes), torch.tensor(normal_boxes)
 
     def __getitem__(self, index):
-        label_path = os.path.join(self.label_dir, self.annotations.iloc[index, 1])
-        boxes = []
-        with open(label_path) as f:
-            for label in f.readlines():
-                class_label, x, y, width, height = [
-                    float(x) if float(x) != int(float(x)) else int(x)
-                    for x in label.replace("\n", "").split()
-                ]
 
-                boxes.append([class_label, x, y, width, height])
-
-        img_path = os.path.join(self.img_dir, self.annotations.iloc[index, 0])
-        image = Image.open(img_path)
-        boxes = torch.tensor(boxes)
+        image = Image.open(self.imgFiles[index]).convert("RGB")
+        image_boxes, _ = self.get_image_boxes(self.boxes[index], box_format="yolo")
 
         if self.transform:
             # image = self.transform(image)
-            image, boxes = self.transform(image, boxes)
+            image, image_boxes = self.transform(image, image_boxes)
 
         # Convert To Cells
         label_matrix = torch.zeros((self.S, self.S, self.C + 5 * self.B))
-        for box in boxes:
+
+        for box in image_boxes:
             class_label, x, y, width, height = box.tolist()
             class_label = int(class_label)
 
@@ -54,17 +115,17 @@ class VOCDataset(torch.utils.data.Dataset):
             x_cell, y_cell = self.S * x - j, self.S * y - i
 
             """
-            Calculating the width and height of cell of bounding box,
-            relative to the cell is done by the following, with
-            width as the example:
+                Calculating the width and height of cell of bounding box,
+                relative to the cell is done by the following, with
+                width as the example:
 
-            width_pixels = (width*self.image_width)
-            cell_pixels = (self.image_width)
+                width_pixels = (width*self.image_width)
+                cell_pixels = (self.image_width)
 
-            Then to find the width relative to the cell is simply:
-            width_pixels/cell_pixels, simplification leads to the
-            formulas below.
-            """
+                Then to find the width relative to the cell is simply:
+                width_pixels/cell_pixels, simplification leads to the
+                formulas below.
+                """
             width_cell, height_cell = (
                 width * self.S,
                 height * self.S,
@@ -73,18 +134,20 @@ class VOCDataset(torch.utils.data.Dataset):
             # If no object already found for specific cell i,j
             # Note: This means we restrict to ONE object
             # per cell!
-            if label_matrix[i, j, 20] == 0:
+            if label_matrix[i, j, 1] == 0:
                 # Set that there exists an object
-                label_matrix[i, j, 20] = 1
+                label_matrix[i, j, 1] = 1
 
                 # Box coordinates
                 box_coordinates = torch.tensor(
                     [x_cell, y_cell, width_cell, height_cell]
                 )
 
-                label_matrix[i, j, 21:25] = box_coordinates
+                label_matrix[i, j, 2:6] = box_coordinates
 
                 # Set one hot encoding for class_label
                 label_matrix[i, j, class_label] = 1
 
         return image, label_matrix
+
+    pass

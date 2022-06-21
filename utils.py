@@ -94,7 +94,7 @@ def non_max_suppression(bboxes, iou_threshold, threshold, box_format="corners"):
 
 
 def mean_average_precision(
-        pred_boxes, true_boxes, iou_threshold=0.5, box_format="midpoint", num_classes=20
+        pred_boxes, true_boxes, iou_threshold=0.5, box_format="midpoint", num_classes=1
 ):
     """
     Calculates mean average precision
@@ -298,13 +298,15 @@ def convert_cellboxes(predictions, S=7):
     by one, resulting in a slower but more readable implementation.
     """
 
+    # predictions : tensor [n# classes, pred_box1_prob, x, y, w, h, pred_box2_prob, x, y, w, h]
     predictions = predictions.to("cpu")
     batch_size = predictions.shape[0]
-    predictions = predictions.reshape(batch_size, 7, 7, 30)
-    bboxes1 = predictions[..., 21:25]
-    bboxes2 = predictions[..., 26:30]
+    # reshaping considering the number of classes : 1 class => 11, 20 classes => 30
+    predictions = predictions.reshape(batch_size, 7, 7, 11)
+    bboxes1 = predictions[..., 2:6]
+    bboxes2 = predictions[..., 7:11]
     scores = torch.cat(
-        (predictions[..., 20].unsqueeze(0), predictions[..., 25].unsqueeze(0)), dim=0
+        (predictions[..., 1].unsqueeze(0), predictions[..., 6].unsqueeze(0)), dim=0
     )
     best_box = scores.argmax(0).unsqueeze(-1)
     best_boxes = bboxes1 * (1 - best_box) + best_box * bboxes2
@@ -313,8 +315,8 @@ def convert_cellboxes(predictions, S=7):
     y = 1 / S * (best_boxes[..., 1:2] + cell_indices.permute(0, 2, 1, 3))
     w_y = 1 / S * best_boxes[..., 2:4]
     converted_bboxes = torch.cat((x, y, w_y), dim=-1)
-    predicted_class = predictions[..., :20].argmax(-1).unsqueeze(-1)
-    best_confidence = torch.max(predictions[..., 20], predictions[..., 25]).unsqueeze(
+    predicted_class = predictions[..., :1].argmax(-1).unsqueeze(-1)
+    best_confidence = torch.max(predictions[..., 1], predictions[..., 6]).unsqueeze(
         -1
     )
     converted_preds = torch.cat(
